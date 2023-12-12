@@ -79,6 +79,8 @@ const DeviceDispatch = vk.DeviceWrapper(.{
     .cmdCopyBuffer = true,
 });
 
+pub const max_concurrent_frames = 3;
+
 pub const GraphicsContext = struct {
     vkb: BaseDispatch,
     vki: InstanceDispatch,
@@ -90,9 +92,21 @@ pub const GraphicsContext = struct {
     props: vk.PhysicalDeviceProperties,
     mem_props: vk.PhysicalDeviceMemoryProperties,
 
+    // Synchronization primitives
+    present_complete_semaphores: [max_concurrent_frames]vk.Semaphore,
+    render_complete_semaphores: [max_concurrent_frames]vk.Semaphore,
+
+    command_pool: vk.CommandPool,
+    command_buffers: [max_concurrent_frames]vk.CommandBuffer,
+    wait_fences: [max_concurrent_frames]vk.Fence,
+
     dev: vk.Device,
     graphics_queue: Queue,
     present_queue: Queue,
+
+    pub fn get_max_concurrent_frames() u32 {
+        return max_concurrent_frames;
+    }
 
     pub fn init(allocator: Allocator, app_name: [*:0]const u8, window: *c.GLFWwindow) !GraphicsContext {
         var self: GraphicsContext = undefined;
@@ -133,7 +147,40 @@ pub const GraphicsContext = struct {
 
         self.mem_props = self.vki.getPhysicalDeviceMemoryProperties(self.pdev);
 
+        try createCommandBuffers(&self);
+        try createSynchronizationPrimitives(&self);
+
         return self;
+    }
+
+    pub fn createCommandBuffers(gc: *GraphicsContext) !void {
+        // All command buffers are allocated from a command pool
+        const command_pool_ci = vk.CommandPoolCreateInfo{
+            .queue_family_index = gc.graphics_queue.family,
+            .flags = .{ .reset_command_buffer_bit = true },
+        };
+        gc.command_pool = try gc.vkd.createCommandPool(gc.dev, &command_pool_ci, null);
+
+        // Allocate one command buffer per max. concurrent frame from above pool
+        gc.command_buffers = undefined;
+        try gc.vkd.allocateCommandBuffers(gc.dev, &.{
+            .command_pool = gc.command_pool,
+            .level = .primary,
+            .command_buffer_count = max_concurrent_frames,
+        }, @ptrCast(&gc.command_buffers[0]));
+    }
+
+    pub fn createSynchronizationPrimitives(gc: *GraphicsContext) !void {
+        for (0..max_concurrent_frames) |i| {
+            // Semaphores (Used for correct command ordering)
+            // Semaphore used to ensure that image presentation is complete before starting to submit again
+            gc.present_complete_semaphores[i] = try gc.vkd.createSemaphore(gc.dev, &.{}, null);
+            // Semaphore used to ensure that all commands submitted have been finished before submitting the image to the queue
+            gc.render_complete_semaphores[i] = try gc.vkd.createSemaphore(gc.dev, &.{}, null);
+
+            // Fences (Used to check draw command buffer completion)
+            gc.wait_fences[i] = try gc.vkd.createFence(gc.dev, &.{ .flags = .{ .signaled_bit = true } }, null);
+        }
     }
 
     pub fn deinit(self: GraphicsContext) void {
