@@ -22,6 +22,8 @@ pub const InstanceDispatch = vk.InstanceWrapper(.{
     .getPhysicalDeviceSurfaceSupportKHR = true,
     .getPhysicalDeviceMemoryProperties = true,
     .getDeviceProcAddr = true,
+    .createDebugUtilsMessengerEXT = true,
+    .destroyDebugUtilsMessengerEXT = true,
 });
 
 pub const DeviceDispatch = vk.DeviceWrapper(.{

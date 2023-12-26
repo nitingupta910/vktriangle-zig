@@ -22,7 +22,9 @@ pub const VkApp = struct {
     dispatch: Dispatch = undefined,
     per_frame: [MAX_CONCURRENT_FRAMES]PerFrame = undefined,
     frame_buffer_resized: bool = true,
+    surface: vk.SurfaceKHR = .null_handle,
     instance: vk.Instance = vk.Instance.null_handle,
+    debugMessenger: vk.DebugUtilsMessengerEXT = .null_handle,
 
     // Dispatch tables
     vkb: Dispatch.BaseDispatch = undefined,
@@ -85,7 +87,7 @@ pub const VkApp = struct {
         return vk.FALSE;
     }
 
-    fn setupDebugMessenger() void {
+    fn setupDebugMessenger(self: *VkApp) !void {
         const ci = vk.DebugUtilsMessengerCreateInfoEXT{ .message_severity = .{
             .verbose_bit_ext = true,
             .warning_bit_ext = true,
@@ -95,13 +97,20 @@ pub const VkApp = struct {
             .validation_bit_ext = true,
             .performance_bit_ext = true,
         }, .pfn_user_callback = &debugCallback };
-        _ = ci; // autofix
+
+        self.debugMessenger = try self.vki.createDebugUtilsMessengerEXT(self.instance, &ci, null);
+    }
+
+    fn createSurface(self: *VkApp) !void {
+        if (c.glfwCreateWindowSurface(self.instance, self.window, null, &self.surface) != .success) {
+            return error.CreateSurfaceFailed;
+        }
     }
 
     pub fn initVulkan(self: *VkApp) !void {
         try createInstance(self);
-        setupDebugMessenger();
-        // createSurface();
+        try setupDebugMessenger(self);
+        try createSurface(self);
         // pickPhysicalDevice();
         // createLogicalDevice();
         // createSwapChain();
