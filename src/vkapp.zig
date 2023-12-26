@@ -74,9 +74,11 @@ pub const VkApp = struct {
         self.vki = try Dispatch.InstanceDispatch.load(self.instance, self.vkb.dispatch.vkGetInstanceProcAddr);
     }
 
-    fn debugCallback(severity: vk.DebugUtilsMessageSeverityFlagsEXT, message_type: vk.DebugUtilsMessageTypeFlagsEXT, callback_data: *const vk.DebugUtilsMessengerCallbackDataEXT, user_data: *void) vk.Bool32 {
-        const msg = callback_data.*.p_message;
-        std.debug.print("(debugCallback) validation layer: ", .{msg});
+    fn debugCallback(severity: vk.DebugUtilsMessageSeverityFlagsEXT, message_type: vk.DebugUtilsMessageTypeFlagsEXT, callback_data: ?*const vk.DebugUtilsMessengerCallbackDataEXT, user_data: ?*anyopaque) callconv(.C) u32 {
+        if (callback_data != null) {
+            const msg = callback_data.?.p_message;
+            std.debug.print("(debugCallback) validation layer: {s}", .{msg});
+        }
         _ = severity; // autofix
         _ = message_type; // autofix
         _ = user_data; // autofix
@@ -92,13 +94,13 @@ pub const VkApp = struct {
             .general_bit_ext = true,
             .validation_bit_ext = true,
             .performance_bit_ext = true,
-        }, .pfn_user_callback = debugCallback };
+        }, .pfn_user_callback = &debugCallback };
         _ = ci; // autofix
     }
 
     pub fn initVulkan(self: *VkApp) !void {
         try createInstance(self);
-        // setupDebugMessenger();
+        setupDebugMessenger();
         // createSurface();
         // pickPhysicalDevice();
         // createLogicalDevice();
