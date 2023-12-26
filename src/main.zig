@@ -4,9 +4,12 @@ const c = @import("c.zig");
 const shaders = @import("shaders");
 const GraphicsContext = @import("graphics_context.zig").GraphicsContext;
 const Swapchain = @import("swapchain.zig").Swapchain;
+const VkApp = @import("vkapp.zig").VkApp;
 const Allocator = std.mem.Allocator;
 
 const app_name = "vulkan-zig triangle example";
+
+pub const max_concurrent_frames = 3;
 
 const Vertex = struct {
     const binding_description = vk.VertexInputBindingDescription{
@@ -41,6 +44,11 @@ const vertices = [_]Vertex{
 };
 
 pub fn main() !void {
+    var app = VkApp{};
+    try app.run();
+}
+
+pub fn main_old() !void {
     if (c.glfwInit() != c.GLFW_TRUE) return error.GlfwInitFailed;
     defer c.glfwTerminate();
 
@@ -49,7 +57,7 @@ pub fn main() !void {
         return error.NoVulkan;
     }
 
-    var extent = vk.Extent2D{ .width = 800, .height = 600 };
+    const extent = vk.Extent2D{ .width = 800, .height = 600 };
 
     c.glfwWindowHint(c.GLFW_CLIENT_API, c.GLFW_NO_API);
     const window = c.glfwCreateWindow(
@@ -98,7 +106,10 @@ pub fn main() !void {
 
     const buffer = try gc.vkd.createBuffer(gc.dev, &.{
         .size = @sizeOf(@TypeOf(vertices)),
-        .usage = .{ .transfer_dst_bit = true, .vertex_buffer_bit = true },
+        .usage = .{
+            .transfer_dst_bit = true,
+            .vertex_buffer_bit = true,
+        },
         .sharing_mode = .exclusive,
     }, null);
     defer gc.vkd.destroyBuffer(gc.dev, buffer, null);
@@ -121,23 +132,25 @@ pub fn main() !void {
     );
     defer destroyCommandBuffers(&gc, pool, allocator, cmdbufs);
 
+    var currentFrame: u64 = 0;
     while (c.glfwWindowShouldClose(window) == c.GLFW_FALSE) {
         const cmdbuf = cmdbufs[swapchain.image_index];
+        _ = cmdbuf;
 
-        const state = swapchain.present(cmdbuf) catch |err| switch (err) {
-            error.OutOfDateKHR => Swapchain.PresentState.suboptimal,
-            else => |narrow| return narrow,
-        };
+        _ = try gc.vkd.waitForFences(gc.dev, 1, @ptrCast(&swapchain.wait_fences[currentFrame]), vk.TRUE, std.math.maxInt(u64));
 
-        var w: c_int = undefined;
-        var h: c_int = undefined;
-        c.glfwGetWindowSize(window, &w, &h);
-
-        if (state == .suboptimal or extent.width != @as(u32, @intCast(w)) or extent.height != @as(u32, @intCast(h))) {
-            extent.width = @intCast(w);
-            extent.height = @intCast(h);
-            try swapchain.recreate(extent);
-
+        const acquire_result = try gc.vkd.acquireNextImageKHR(gc.dev, swapchain.handle, std.math.maxInt(u64), swapchain.present_complete_semaphores[currentFrame], vk.Fence.null_handle);
+        if (acquire_result.result == .error_out_of_date_khr) {
+            var w: c_int = undefined;
+            var h: c_int = undefined;
+            c.glfwGetFramebufferSize(window, &w, &h);
+            if (w == 0 or h == 0) {
+                c.glfwGetFramebufferSize(window, &w, &h);
+                c.glfwWaitEvents();
+            }
+            const new_extent = vk.Extent2D{ .width = @intCast(w), .height = @intCast(h) };
+            _ = try gc.vkd.deviceWaitIdle(gc.dev);
+            try swapchain.recreate(new_extent);
             destroyFramebuffers(&gc, allocator, framebuffers);
             framebuffers = try createFramebuffers(&gc, allocator, render_pass, swapchain);
 
@@ -152,12 +165,15 @@ pub fn main() !void {
                 pipeline,
                 framebuffers,
             );
+        } else if ((acquire_result.result != .success) and (acquire_result.result != .suboptimal_khr)) {
+            @panic("could not acquire the next swap chain image");
         }
 
-        c.glfwPollEvents();
-    }
+        _ = try gc.vkd.resetFences(gc.dev, 1, @ptrCast(&swapchain.wait_fences[currentFrame]));
 
-    try swapchain.waitForAllFences();
+        c.glfwPollEvents();
+        currentFrame = (currentFrame + 1) % max_concurrent_frames;
+    }
 }
 
 fn uploadVertices(gc: *const GraphicsContext, pool: vk.CommandPool, buffer: vk.Buffer) !void {
@@ -216,7 +232,19 @@ fn copyBuffer(gc: *const GraphicsContext, pool: vk.CommandPool, dst: vk.Buffer, 
     try gc.vkd.queueWaitIdle(gc.graphics_queue.handle);
 }
 
-fn createCommandBuffers(
+fn createCommandBuffers(gc: *const GraphicsContext, pool: vk.CommandPool, allocator: Allocator) ![]vk.CommandBuffer {
+    const cmdbufs = try allocator.alloc(vk.CommandBuffer, max_concurrent_frames);
+    errdefer allocator.free(cmdbufs);
+
+    try gc.vkd.allocateCommandBuffers(gc.dev, &.{
+        .command_pool = pool,
+        .level = .primary,
+        .command_buffer_count = @as(u32, @truncate(cmdbufs.len)),
+    }, cmdbufs.ptr);
+    errdefer gc.vkd.freeCommandBuffers(gc.dev, pool, @truncate(cmdbufs.len), cmdbufs.ptr);
+}
+
+fn createCommandBuffers_old(
     gc: *const GraphicsContext,
     pool: vk.CommandPool,
     allocator: Allocator,
@@ -226,7 +254,7 @@ fn createCommandBuffers(
     pipeline: vk.Pipeline,
     framebuffers: []vk.Framebuffer,
 ) ![]vk.CommandBuffer {
-    const cmdbufs = try allocator.alloc(vk.CommandBuffer, framebuffers.len);
+    const cmdbufs = try allocator.alloc(vk.CommandBuffer, max_concurrent_frames);
     errdefer allocator.free(cmdbufs);
 
     try gc.vkd.allocateCommandBuffers(gc.dev, &.{

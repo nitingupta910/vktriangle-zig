@@ -5,7 +5,7 @@
             "name": "(gdb) Launch",
             "type": "cppdbg",
             "request": "launch",
-            "program": "./zig-out/bin/vktriangle-zig",
+            "program": "${workspaceFolder}/zig-out/bin/vktriangle-zig",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
