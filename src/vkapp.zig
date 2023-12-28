@@ -1,4 +1,5 @@
 const std = @import("std");
+const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const vk = @import("vulkan.zig");
 const c = @import("c.zig");
@@ -151,7 +152,10 @@ pub const VkApp = struct {
             return false;
         }
 
-        if (!try checkSurfaceSupport(self, pdev)) {
+        const details = try querySwapchainSupport(self, pdev);
+        defer details.deinit();
+
+        if (details.formats.items.len == 0 or details.present_modes.items.len == 0) {
             return false;
         }
 
@@ -196,7 +200,29 @@ pub const VkApp = struct {
         }
     }
 
-    fn checkSurfaceSupport(self: *VkApp, pdev: vk.PhysicalDevice) !bool {
+    const SwapChainSupportDetails = struct {
+        capabilities: vk.SurfaceCapabilitiesKHR,
+        formats: ArrayList(vk.SurfaceFormatKHR),
+        present_modes: ArrayList(vk.PresentModeKHR),
+
+        pub fn init(allocator: Allocator) !SwapChainSupportDetails {
+            return .{
+                .capabilities = undefined,
+                .formats = ArrayList(vk.SurfaceFormatKHR).init(allocator),
+                .present_modes = ArrayList(vk.PresentModeKHR).init(allocator),
+            };
+        }
+
+        pub fn deinit(self: SwapChainSupportDetails) void {
+            self.formats.deinit();
+            self.present_modes.deinit();
+        }
+    };
+
+    fn querySwapchainSupport(self: *VkApp, pdev: vk.PhysicalDevice) !SwapChainSupportDetails {
+        var details = try SwapChainSupportDetails.init(self.allocator);
+        errdefer details.deinit();
+
         var format_count: u32 = undefined;
         _ = try self.vki.getPhysicalDeviceSurfaceFormatsKHR(
             pdev,
@@ -205,6 +231,16 @@ pub const VkApp = struct {
             null,
         );
 
+        if (format_count != 0) {
+            _ = try details.formats.resize(format_count);
+            _ = try self.vki.getPhysicalDeviceSurfaceFormatsKHR(
+                pdev,
+                self.surface,
+                &format_count,
+                details.formats.items.ptr,
+            );
+        }
+
         var present_mode_count: u32 = undefined;
         _ = try self.vki.getPhysicalDeviceSurfacePresentModesKHR(
             pdev,
@@ -212,8 +248,17 @@ pub const VkApp = struct {
             &present_mode_count,
             null,
         );
+        if (present_mode_count != 0) {
+            _ = try details.present_modes.resize(present_mode_count);
+            _ = try self.vki.getPhysicalDeviceSurfacePresentModesKHR(
+                pdev,
+                self.surface,
+                &present_mode_count,
+                details.present_modes.items.ptr,
+            );
+        }
 
-        return format_count > 0 and present_mode_count > 0;
+        return details;
     }
 
     fn checkDeviceExtensionSupport(self: *VkApp, pdev: vk.PhysicalDevice) !bool {
@@ -296,13 +341,18 @@ pub const VkApp = struct {
         );
     }
 
+    fn createSwapChain(self: *VkApp) !void {
+        _ = self; // autofix
+
+    }
+
     pub fn initVulkan(self: *VkApp) !void {
         try createInstance(self);
         try setupDebugMessenger(self);
         try createSurface(self);
         try pickPhysicalDevice(self);
         try createLogicalDevice(self);
-        // createSwapChain();
+        try createSwapChain(self);
         // createImageViews();
         // createRenderPass();
         // createGraphicsPipeline();
