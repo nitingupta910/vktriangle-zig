@@ -30,8 +30,11 @@ pub const VkApp = struct {
     instance: vk.Instance = vk.Instance.null_handle,
     debugMessenger: vk.DebugUtilsMessengerEXT = .null_handle,
     pdev: vk.PhysicalDevice = .null_handle,
-    graphics_family: ?u32 = null,
-    present_family: ?u32 = null,
+    dev: vk.Device = .null_handle,
+    graphics_family_index: ?u32 = null,
+    present_family_index: ?u32 = null,
+    graphics_queue: vk.Queue = undefined,
+    present_queue: vk.Queue = undefined,
 
     // Dispatch tables
     vkb: Dispatch.BaseDispatch = undefined,
@@ -153,7 +156,7 @@ pub const VkApp = struct {
         }
 
         try findQueueFamilies(self, pdev);
-        if ((self.present_family == null) or (self.graphics_family == null)) {
+        if ((self.present_family_index == null) or (self.graphics_family_index == null)) {
             return false;
         }
 
@@ -179,16 +182,16 @@ pub const VkApp = struct {
         for (families, 0..) |properties, i| {
             const family: u32 = @intCast(i);
 
-            if (self.graphics_family == null and properties.queue_flags.graphics_bit) {
-                self.graphics_family = family;
+            if (self.graphics_family_index == null and properties.queue_flags.graphics_bit) {
+                self.graphics_family_index = family;
             }
 
-            if (self.present_family == null and (try self.vki.getPhysicalDeviceSurfaceSupportKHR(
+            if (self.present_family_index == null and (try self.vki.getPhysicalDeviceSurfaceSupportKHR(
                 pdev,
                 family,
                 self.surface,
             )) == vk.TRUE) {
-                self.present_family = family;
+                self.present_family_index = family;
             }
         }
     }
@@ -245,12 +248,60 @@ pub const VkApp = struct {
         return true;
     }
 
+    fn createLogicalDevice(self: *VkApp) !void {
+        const priority = [_]f32{1};
+        const qci = [_]vk.DeviceQueueCreateInfo{
+            .{
+                .queue_family_index = 0, //self.graphics_family_index.?,
+                .queue_count = 1,
+                .p_queue_priorities = &priority,
+            },
+            .{
+                .queue_family_index = 0, //self.present_family_index.?,
+                .queue_count = 1,
+                .p_queue_priorities = &priority,
+            },
+        };
+
+        const queue_count: u32 = if (self.graphics_family_index.? == self.present_family_index.?)
+            1
+        else
+            2;
+
+        self.dev = try self.vki.createDevice(
+            self.pdev,
+            &.{
+                .queue_create_info_count = queue_count,
+                .p_queue_create_infos = &qci,
+                .enabled_extension_count = required_device_extensions.len,
+                .pp_enabled_extension_names = @as(
+                    [*]const [*:0]const u8,
+                    @ptrCast(&required_device_extensions),
+                ),
+            },
+            null,
+        );
+
+        self.vkd = try Dispatch.DeviceDispatch.load(self.dev, self.vki.dispatch.vkGetDeviceProcAddr);
+
+        self.graphics_queue = self.vkd.getDeviceQueue(
+            self.dev,
+            self.graphics_family_index.?,
+            0,
+        );
+        self.present_queue = self.vkd.getDeviceQueue(
+            self.dev,
+            self.present_family_index.?,
+            0,
+        );
+    }
+
     pub fn initVulkan(self: *VkApp) !void {
         try createInstance(self);
         try setupDebugMessenger(self);
         try createSurface(self);
         try pickPhysicalDevice(self);
-        // createLogicalDevice();
+        try createLogicalDevice(self);
         // createSwapChain();
         // createImageViews();
         // createRenderPass();

@@ -25581,12 +25581,7 @@ pub fn DeviceWrapper(comptime cmds: DeviceCommandFlags) type {
             queue_index: u32,
         ) Queue {
             var queue: Queue = undefined;
-            self.dispatch.vkGetDeviceQueue(
-                device,
-                queue_family_index,
-                queue_index,
-                &queue,
-            );
+            self.dispatch.vkGetDeviceQueue(device, queue_family_index, queue_index, &queue);
             return queue;
         }
         pub const QueueSubmitError = error{
