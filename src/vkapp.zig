@@ -32,10 +32,11 @@ pub const VkApp = struct {
     debugMessenger: vk.DebugUtilsMessengerEXT = .null_handle,
     pdev: vk.PhysicalDevice = .null_handle,
     dev: vk.Device = .null_handle,
-    graphics_family_index: ?u32 = null,
-    present_family_index: ?u32 = null,
     graphics_queue: vk.Queue = undefined,
     present_queue: vk.Queue = undefined,
+    swap_chain_images: ArrayList(vk.Image) = undefined,
+    swap_chain_image_format: vk.Format = undefined,
+    swap_chain_extent: vk.Extent2D = undefined,
 
     // Dispatch tables
     vkb: Dispatch.BaseDispatch = undefined,
@@ -159,15 +160,22 @@ pub const VkApp = struct {
             return false;
         }
 
-        try findQueueFamilies(self, pdev);
-        if ((self.present_family_index == null) or (self.graphics_family_index == null)) {
-            return false;
-        }
-
-        return true;
+        const indices = try findQueueFamilies(self, pdev);
+        return indices.isComplete();
     }
 
-    fn findQueueFamilies(self: *VkApp, pdev: vk.PhysicalDevice) !void {
+    const QueueFamilyIndices = struct {
+        graphics_family: ?u32,
+        present_family: ?u32,
+
+        pub fn isComplete(self: QueueFamilyIndices) bool {
+            return self.graphics_family != null and self.present_family != null;
+        }
+    };
+
+    fn findQueueFamilies(self: *VkApp, pdev: vk.PhysicalDevice) !QueueFamilyIndices {
+        var indices: QueueFamilyIndices = undefined;
+
         var family_count: u32 = undefined;
         self.vki.getPhysicalDeviceQueueFamilyProperties(
             pdev,
@@ -185,19 +193,25 @@ pub const VkApp = struct {
 
         for (families, 0..) |properties, i| {
             const family: u32 = @intCast(i);
-
-            if (self.graphics_family_index == null and properties.queue_flags.graphics_bit) {
-                self.graphics_family_index = family;
+            if (properties.queue_flags.graphics_bit) {
+                indices.graphics_family = @as(u32, @intCast(i));
             }
 
-            if (self.present_family_index == null and (try self.vki.getPhysicalDeviceSurfaceSupportKHR(
+            const present_support = try self.vki.getPhysicalDeviceSurfaceSupportKHR(
                 pdev,
                 family,
                 self.surface,
-            )) == vk.TRUE) {
-                self.present_family_index = family;
+            );
+            if (present_support != 0) {
+                indices.present_family = @intCast(i);
+            }
+
+            if (indices.isComplete()) {
+                break;
             }
         }
+
+        return indices;
     }
 
     const SwapChainSupportDetails = struct {
@@ -222,6 +236,11 @@ pub const VkApp = struct {
     fn querySwapchainSupport(self: *VkApp, pdev: vk.PhysicalDevice) !SwapChainSupportDetails {
         var details = try SwapChainSupportDetails.init(self.allocator);
         errdefer details.deinit();
+
+        details.capabilities = try self.vki.getPhysicalDeviceSurfaceCapabilitiesKHR(
+            pdev,
+            self.surface,
+        );
 
         var format_count: u32 = undefined;
         _ = try self.vki.getPhysicalDeviceSurfaceFormatsKHR(
@@ -294,6 +313,8 @@ pub const VkApp = struct {
     }
 
     fn createLogicalDevice(self: *VkApp) !void {
+        const indices = try self.findQueueFamilies(self.pdev);
+
         const priority = [_]f32{1};
         const qci = [_]vk.DeviceQueueCreateInfo{
             .{
@@ -308,7 +329,7 @@ pub const VkApp = struct {
             },
         };
 
-        const queue_count: u32 = if (self.graphics_family_index.? == self.present_family_index.?)
+        const queue_count: u32 = if (indices.graphics_family.? == indices.present_family.?)
             1
         else
             2;
@@ -331,19 +352,110 @@ pub const VkApp = struct {
 
         self.graphics_queue = self.vkd.getDeviceQueue(
             self.dev,
-            self.graphics_family_index.?,
+            indices.graphics_family.?,
             0,
         );
         self.present_queue = self.vkd.getDeviceQueue(
             self.dev,
-            self.present_family_index.?,
+            indices.present_family.?,
             0,
         );
     }
 
-    fn createSwapChain(self: *VkApp) !void {
-        _ = self; // autofix
+    fn chooseSurfaceFormat(available_formats: []vk.SurfaceFormatKHR) !vk.SurfaceFormatKHR {
+        for (available_formats) |format| {
+            if (format.format == .b8g8r8_srgb and format.color_space == .srgb_nonlinear_khr) {
+                return format;
+            }
+        }
+        return available_formats[0];
+    }
 
+    fn chooseSwapPresentMode(available_present_modes: []vk.PresentModeKHR) !vk.PresentModeKHR {
+        for (available_present_modes) |mode| {
+            if (mode == .mailbox_khr) {
+                return mode;
+            }
+        }
+        return .fifo_khr;
+    }
+
+    fn chooseSwapExtent(window: *c.GLFWwindow, capabilities: vk.SurfaceCapabilitiesKHR) !vk.Extent2D {
+        if (capabilities.current_extent.width != std.math.maxInt(u32)) {
+            return capabilities.current_extent;
+        }
+        var width: c_int = 0;
+        var height: c_int = 0;
+        c.glfwGetFramebufferSize(window, &width, &height);
+
+        var actual_extent: vk.Extent2D = .{
+            .width = @as(u32, @intCast(width)),
+            .height = @as(u32, @intCast(height)),
+        };
+        actual_extent.width = std.math.clamp(
+            actual_extent.width,
+            capabilities.min_image_extent.width,
+            capabilities.max_image_extent.width,
+        );
+        actual_extent.height = std.math.clamp(
+            actual_extent.height,
+            capabilities.min_image_extent.height,
+            capabilities.max_image_extent.height,
+        );
+        return actual_extent;
+    }
+
+    fn createSwapChain(self: *VkApp) !void {
+        const swap_chain_support = try self.querySwapchainSupport(self.pdev);
+        defer swap_chain_support.deinit();
+
+        const surface_format = try chooseSurfaceFormat(swap_chain_support.formats.items);
+        const present_mode = try chooseSwapPresentMode(swap_chain_support.present_modes.items);
+        const extent = try chooseSwapExtent(self.window, swap_chain_support.capabilities);
+        var image_count = swap_chain_support.capabilities.min_image_count + 1;
+        if (swap_chain_support.capabilities.max_image_count > 0 and image_count > swap_chain_support.capabilities.max_image_count) {
+            image_count = swap_chain_support.capabilities.max_image_count;
+        }
+
+        var create_info = vk.SwapchainCreateInfoKHR{
+            .surface = self.surface,
+            .min_image_count = image_count,
+            .image_format = surface_format.format,
+            .image_color_space = surface_format.color_space,
+            .image_extent = extent,
+            .image_array_layers = 1,
+            .image_usage = .{ .color_attachment_bit = true },
+            .image_sharing_mode = undefined,
+            .p_queue_family_indices = undefined,
+            .pre_transform = swap_chain_support.capabilities.current_transform,
+            .composite_alpha = .{ .opaque_bit_khr = true },
+            .present_mode = present_mode,
+            .clipped = vk.TRUE,
+        };
+
+        const indices = try self.findQueueFamilies(self.pdev);
+        const queue_family_indices = [_]u32{ indices.graphics_family.?, indices.present_family.? };
+        if (indices.graphics_family != indices.present_family) {
+            create_info.image_sharing_mode = .concurrent;
+            create_info.queue_family_index_count = 2;
+            create_info.p_queue_family_indices = &queue_family_indices;
+        } else {
+            create_info.image_sharing_mode = .exclusive;
+        }
+
+        const swap_chain = try self.vkd.createSwapchainKHR(self.dev, &create_info, null);
+        _ = try self.vkd.getSwapchainImagesKHR(self.dev, swap_chain, &image_count, null);
+        self.swap_chain_images = ArrayList(vk.Image).init(self.allocator);
+        _ = try self.swap_chain_images.resize(image_count);
+        _ = try self.vkd.getSwapchainImagesKHR(
+            self.dev,
+            swap_chain,
+            &image_count,
+            self.swap_chain_images.items.ptr,
+        );
+
+        self.swap_chain_image_format = surface_format.format;
+        self.swap_chain_extent = extent;
     }
 
     pub fn initVulkan(self: *VkApp) !void {
